@@ -67,6 +67,11 @@
 	return self;
 }
 
+- (void)dealloc {
+    [visualizerWindow release];
+    [super dealloc];
+}
+
 -(NSString*) visualizerName
 {
 	return @"Default";
@@ -83,12 +88,11 @@
 	{
         NSRect screenFrame = [NSScreen mainScreen].frame;
 		NSRect frameRect = NSMakeRect(0, 100, NSWidth(screenFrame), 100);
-		visualizerWindow = [[[KCDefaultVisualizerWindow alloc]
+		visualizerWindow = [[KCDefaultVisualizerWindow alloc]
 			initWithContentRect:frameRect
 			styleMask:NSBorderlessWindowMask
 			backing:NSBackingStoreBuffered
-			defer:NO
-			] retain];
+			defer:NO];
 		[visualizerWindow orderFront:self];
 	}
 }
@@ -122,20 +126,6 @@
 
 @end
 
-@interface SSS : NSView
-{
-}
-@end
-
-@implementation SSS
-
--(BOOL) isFlipped
-{
-	return YES;
-}
-
-@end
-
 @implementation KCDefaultVisualizerWindow
 
 -(id) initWithContentRect:(NSRect)contentRect styleMask:(NSUInteger)aStyle backing:(NSBackingStoreType)bufferingType defer:(BOOL)flag
@@ -151,8 +141,7 @@
     CGFloat padding = 10;
     NSRect boundingRect = NSInsetRect([NSScreen mainScreen].frame, padding, padding);
     if (!NSPointInRect(self.frame.origin, boundingRect)) {
-        NSRect defaultFrame = NSMakeRect(padding, padding, contentRect.size.width, contentRect.size.height);
-        [self setFrame:defaultFrame display:NO];
+        [self resetFrame];
     }
 
 	[self setLevel:NSScreenSaverWindowLevel];
@@ -162,35 +151,42 @@
 	[self setAlphaValue:1];
 	[self setMovableByWindowBackground:YES];
 
-/*
-	NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
-	NSView* vv = [[KCDefaultVisualizerBezelView alloc]
-		initWithMaxWidth:r.size.width
-		text:@"Welcome to KeyCastr, you sucker!"
-		isCommand:NO
-		fontSize:[userDefaults floatForKey:@"default.fontSize"]
-		fontColor:[userDefaults colorForKey:@"default.textColor"]
-		backgroundColor:[userDefaults colorForKey:@"default.bezelColor"]
-		];
-	[[self contentView] addSubview:vv];
-*/
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenParametersDidChange) name:NSApplicationDidChangeScreenParametersNotification object:nil];
 
 	return self;
 }
 
--(void) _lineBreak:(id)sender
-{
-	_mostRecentBezelView = nil;
+- (void)dealloc {
+    [_runningAnimations removeAllObjects];
+    [_runningAnimations release];
+    [super dealloc];
+}
+
+- (void)screenParametersDidChange {
+    [self resetFrame];
+}
+
+- (void)resetFrame {
+    CGFloat padding = 10;
+    NSRect defaultFrame = NSMakeRect(padding, padding, self.frame.size.width, self.frame.size.height);
+    [self setFrame:defaultFrame display:NO];
+}
+
+- (void)abandonCurrentBezelView {
+    [_currentBezelView release];
+	_currentBezelView = nil;
 }
 
 -(void) _cancelLineBreak
 {
-	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(_lineBreak:) object:nil];
+	[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(abandonCurrentBezelView) object:nil];
 }
 
 -(void) _scheduleLineBreak
 {
-	[self performSelector:@selector(_lineBreak:) withObject:nil afterDelay:[[NSUserDefaults standardUserDefaults] floatForKey:@"default.keystrokeDelay"]];
+	[self performSelector:@selector(abandonCurrentBezelView)
+			   withObject:nil
+			   afterDelay:[[NSUserDefaults standardUserDefaults] floatForKey:@"default.keystrokeDelay"]];
 }
 
 -(void) addKeystroke:(KCKeystroke*)keystroke
@@ -198,7 +194,12 @@
 	[self _cancelLineBreak];
 	NSString* charString = [keystroke convertToString];
 //		NSLog( @"%d", [keystroke isCommand] );
-	if (_mostRecentBezelView == nil || [keystroke isCommand])
+	if ([keystroke isCommand])
+	{
+        [self abandonCurrentBezelView];
+	}
+
+	if (_currentBezelView == nil)
 	{
 		NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
         NSRect frame = [self frame];
@@ -207,34 +208,31 @@
         if (!(maxWidth > 0)) {
             NSLog(@"Fixing frame; width not greater than 0: %@", NSStringFromRect(frame));
             maxWidth = 200;
-            frame.size = NSMakeSize(maxWidth, MAX(32.0, frame.size.height));
+            frame.size = NSMakeSize(maxWidth, fmaxf(32.0, frame.size.height));
             [self setFrame:frame display:YES];
             NSLog(@"New frame: %@", NSStringFromRect(frame));
         }
-		_mostRecentBezelView = [[KCDefaultVisualizerBezelView alloc]
+		_currentBezelView = [[KCDefaultVisualizerBezelView alloc]
 			initWithMaxWidth:maxWidth
 			text:charString
 			backgroundColor:[userDefaults colorForKey:@"default.bezelColor"]
 			];
-		frame.size.height += 10 + [_mostRecentBezelView frame].size.height;
-		[_mostRecentBezelView setAutoresizingMask:NSViewMinYMargin];
+		frame.size.height += 10 + _currentBezelView.frame.size.height;
+		[_currentBezelView setAutoresizingMask:NSViewMinYMargin];
 		
 		[self setFrame:frame display:YES animate:NO];
 
-		[[self contentView] addSubview:[_mostRecentBezelView autorelease]];
-		if ([keystroke isCommand])
-			_mostRecentBezelView = nil;
+		[[self contentView] addSubview:_currentBezelView];
 	}
 	else
 	{
-		[_mostRecentBezelView appendString:charString];
-		[self _scheduleLineBreak];
+		[_currentBezelView appendString:charString];
 	}
+    [self _scheduleLineBreak];
 }
 
 -(void) abandonCurrentView
 {
-	_mostRecentBezelView = nil;
 	[self _cancelLineBreak];
 }
 
@@ -298,7 +296,6 @@
 		return nil;
 
 	_bezelView = [bezelView retain];
-	_window = [_bezelView window];
 
 	return self;
 }
@@ -395,6 +392,15 @@ static const int kKCBezelBorder = 6;
 	[self scheduleFadeOut];
 
 	return self;
+}
+
+- (void)dealloc {
+    [_backgroundColor release];
+    [_textStorage release];
+    [_textContainer release];
+    [_layoutManager release];
+
+    [super dealloc];
 }
 
 -(void) scheduleFadeOut
